@@ -76,20 +76,45 @@
   });
 })();
 
-/* ---- medicao (GA4) + eventos ----
-   Preencher GA_ID com o ID de medicao do GA4 (G-XXXXXXXXXX). Vazio = so dataLayer, nada e enviado. */
+/* ---- medicao (GA4) + eventos + aviso de cookies (LGPD) ----
+   O GA4 so carrega depois que o visitante aceita. A escolha fica salva no navegador. */
 (function(){
-  var GA_ID='';
+  var GA_ID='G-JXBJTRB23S';
+  var KEY='bc_consent';
   window.dataLayer=window.dataLayer||[];
   function gtag(){dataLayer.push(arguments)}
   window.gtag=gtag;
-  if(GA_ID){
+  function get(){try{return localStorage.getItem(KEY)}catch(e){return null}}
+  function set(v){try{localStorage.setItem(KEY,v)}catch(e){}}
+  var loaded=false;
+  function load(){
+    if(loaded||!GA_ID)return;
+    loaded=true;
     var s=document.createElement('script');s.async=true;
     s.src='https://www.googletagmanager.com/gtag/js?id='+GA_ID;
     document.head.appendChild(s);
     gtag('js',new Date());
     gtag('config',GA_ID,{anonymize_ip:true});
   }
+  function banner(){
+    var b=document.createElement('div');
+    b.id='cookie-notice';
+    b.setAttribute('role','dialog');b.setAttribute('aria-label','Aviso de cookies');
+    b.innerHTML='<p>Usamos cookies de medição para entender como o site é usado e melhorar o atendimento. Saiba mais na <a href="/privacidade/">política de privacidade</a>.</p>'+
+      '<div><button type="button" data-c="no">Recusar</button><button type="button" data-c="yes" class="ok">Aceitar</button></div>';
+    b.addEventListener('click',function(e){
+      var c=e.target&&e.target.getAttribute&&e.target.getAttribute('data-c');
+      if(!c)return;
+      set(c==='yes'?'granted':'denied');
+      if(c==='yes')load();
+      b.remove();
+    });
+    document.body.appendChild(b);
+  }
+  var st=get();
+  if(st==='granted')load();
+  else if(st!=='denied')banner();
+
   function track(name,p){try{p=p||{};p.page_path=location.pathname;gtag('event',name,p)}catch(e){}}
   document.addEventListener('click',function(e){
     var a=e.target.closest&&e.target.closest('a');
