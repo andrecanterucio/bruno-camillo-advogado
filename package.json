@@ -1,0 +1,6 @@
+{
+  "name": "bruno-camillo-advogado-site",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Landing page do advogado Bruno Camillo. Site estático; sem build. Leads vão para o painel do cliente (zacda-commerce)."
+}
