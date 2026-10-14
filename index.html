@@ -186,7 +186,7 @@ h1{font-weight:700}
 .facts .wrap{display:grid;grid-template-columns:repeat(4,1fr)}
 .fact{padding:38px 28px;border-left:1px solid var(--line)}
 .fact:first-child{border-left:0;padding-left:0}
-.fact .n{font-family:var(--serif);font-size:clamp(34px,3.6vw,48px);color:var(--gold);line-height:1}
+.fact .n{font-family:var(--serif);font-size:clamp(22px,2.6vw,34px);color:var(--gold);line-height:1.1;white-space:nowrap}
 .fact p{font-size:14px;color:var(--muted);margin-top:12px;line-height:1.5;max-width:26ch}
 
 /* areas */
@@ -343,6 +343,7 @@ footer{border-top:1px solid var(--line);padding:56px 0 40px;background:var(--ink
   #wa span{display:none}#wa{padding:0;width:56px;height:56px;justify-content:center;right:16px}
   details p{padding-right:0}
 }
+@media(max-width:520px){.fact .n{font-size:20px}.fact p{font-size:13px}}
 </style>
 </head>
 <body>
