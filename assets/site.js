@@ -46,6 +46,17 @@
   // cartões de área pré-selecionam o assunto
   $$('.area').forEach(function(a){a.addEventListener('click',function(){var s=$('#area');for(var i=0;i<s.options.length;i++){if(s.options[i].text===a.dataset.area){s.selectedIndex=i}}})});
 
+
+  // carrossel de avaliacoes (Google)
+  var rt=$('#rev-track'),rp=$('#rev-prev'),rn=$('#rev-next');
+  if(rt&&rp&&rn){
+    var step=function(){var c=rt.querySelector('.rev-card');return c?c.offsetWidth+16:320};
+    var upd=function(){rp.disabled=rt.scrollLeft<4;rn.disabled=rt.scrollLeft+rt.clientWidth>=rt.scrollWidth-4};
+    rp.addEventListener('click',function(){rt.scrollBy({left:-step()})});
+    rn.addEventListener('click',function(){rt.scrollBy({left:step()})});
+    rt.addEventListener('scroll',upd,{passive:true});addEventListener('resize',upd);upd();
+  }
+
   // máscara de telefone
   $('#tel').addEventListener('input',function(){
     var v=this.value.replace(/\D/g,'').slice(0,11);
@@ -123,5 +134,6 @@
     if(a.hasAttribute('data-wa')||/wa\.me|whatsapp:/.test(h)){track('whatsapp_click',{link_location:loc})}
     else if(/^mailto:/.test(h)){track('email_click',{link_location:loc})}
     else if(/instagram\.com|linkedin\.com/.test(h)){track('social_click',{link_url:h})}
+    else if(a.getAttribute('data-ev')==='google_reviews_click'){track('google_reviews_click',{link_location:loc})}
   },true);
 })();
