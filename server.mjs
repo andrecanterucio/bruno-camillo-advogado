@@ -26,6 +26,15 @@ const T = await import('./lib/termos.mjs');
 const { avisoSemNovidade } = await import('./lib/avisos.mjs');
 const { descreve: descreveAuditoria } = await import('./lib/auditoria.mjs');
 const { avisaInteresse } = await import('./lib/email.mjs');
+const { r2Config, r2Apaga } = await import('./lib/r2.mjs');
+// Apaga também a cópia cifrada no R2 (backup). Falha no R2 não impede a exclusão local, mas fica registrada.
+async function apagaNoR2(arquivos) {
+  const cfg = r2Config();
+  if (!cfg || !arquivos.length) return;
+  const rs = await Promise.allSettled(arquivos.map((a) => r2Apaga(cfg, `uploads/${a}.enc`)));
+  const falhas = rs.filter((r) => r.status === 'rejected');
+  if (falhas.length) console.warn(`R2: ${falhas.length} de ${rs.length} arquivo(s) não foram apagados no backup: ${falhas[0].reason?.message}`);
+}
 const SENHA_FALSA = hashPassword('senha-falsa-para-igualar-o-tempo-de-resposta');
 
 const PORT = +(process.env.PORT || 3000);
@@ -323,12 +332,16 @@ R('PATCH', '/api/casos/:id', ({ user, params, body }) => {
   audit(user.id, 'caso.editar', params.id);
   return { ok: true };
 });
-R('DELETE', '/api/casos/:id', ({ user, params }) => {
+R('DELETE', '/api/casos/:id', async ({ user, params }) => {
   exigeAdmin(user);
-  for (const d of all('SELECT arquivo FROM documentos WHERE caso_id=?', params.id)) fs.rmSync(path.join(UPLOAD_DIR, d.arquivo), { force: true });
+  const caso = get('SELECT titulo FROM casos WHERE id=?', params.id);
+  if (!caso) throw new HttpError(404, 'Caso não encontrado.');
+  const arquivos = all('SELECT arquivo FROM documentos WHERE caso_id=?', params.id).map((d) => d.arquivo);
+  for (const a of arquivos) fs.rmSync(path.join(UPLOAD_DIR, a), { force: true });
   run('DELETE FROM casos WHERE id=?', params.id);
-  audit(user.id, 'caso.excluir', params.id);
-  return { ok: true };
+  audit(user.id, 'caso.excluir', `${params.id} ${caso.titulo}`);
+  await apagaNoR2(arquivos);
+  return { ok: true, documentos_apagados: arquivos.length };
 });
 R('POST', '/api/casos/:id/datajud', async ({ user, params }) => {
   exigeStaff(user);
@@ -428,11 +441,12 @@ R('PATCH', '/api/documentos/:id', ({ user, params, body }) => {
   audit(user.id, 'documento.visibilidade', params.id);
   return { ok: true };
 });
-R('DELETE', '/api/documentos/:id', ({ user, params }) => {
+R('DELETE', '/api/documentos/:id', async ({ user, params }) => {
   exigeAdmin(user);
-  const d = get('SELECT arquivo FROM documentos WHERE id=?', params.id);
+  const d = get('SELECT arquivo, nome FROM documentos WHERE id=?', params.id);
   if (d) { fs.rmSync(path.join(UPLOAD_DIR, d.arquivo), { force: true }); run('DELETE FROM documentos WHERE id=?', params.id); }
-  audit(user.id, 'documento.excluir', params.id);
+  audit(user.id, 'documento.excluir', `${params.id} ${d?.nome || ''}`.trim());
+  if (d) await apagaNoR2([d.arquivo]);
   return { ok: true };
 });
 R('GET', '/api/documentos/:id/download', ({ user, params, res }) => {

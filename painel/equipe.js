@@ -216,6 +216,25 @@ VIEWS.casos = async () => {
     ...(k.casos.length ? [] : [h('p', { class: 'notice' }, 'Nenhum caso ainda. Crie um caso ou importe o board do Trello em "Importar do Trello".')]), board);
 };
 
+/** Exclusão definitiva de um caso: mostra o que será apagado e só libera o botão com a palavra EXCLUIR digitada. */
+function excluirCasoDialog(c, d, depois) {
+  const n = (v) => (Array.isArray(v) ? v.length : 0);
+  const conf = h('input', { placeholder: 'Digite EXCLUIR', autocomplete: 'off', 'aria-label': 'Digite EXCLUIR para confirmar' });
+  let botao;
+  conf.addEventListener('input', () => { if (botao) botao.disabled = conf.value.trim() !== 'EXCLUIR'; });
+  const m = modal({
+    titulo: 'Excluir caso definitivamente',
+    corpo: h('div', { class: 'stack' },
+      h('p', { class: 'notice bad' }, h('b', {}, c.titulo), h('br'), `Serão apagados: ${n(d.andamentos)} andamento(s), ${n(d.documentos)} documento(s) e ${n(d.prazos)} prazo(s). Os arquivos também saem do backup em nuvem.`),
+      h('p', { class: 'small' }, 'Não dá para desfazer. Backups do banco já feitos guardam este caso por até 30 dias e depois são apagados automaticamente. Se só quer tirar da lista, mude a fase do caso em vez de excluir.'),
+      h('div', {}, h('label', {}, 'Para confirmar, digite EXCLUIR'), conf)),
+    acoes: [
+      { texto: 'Excluir definitivamente', classe: 'danger', desabilitado: true, onclick: async () => { await api(`/api/casos/${c.id}`, { method: 'DELETE' }); toast('Caso excluído.', 'ok'); depois(); return true; } },
+      { texto: 'Cancelar', classe: 'ghost', onclick: async () => true }],
+  });
+  botao = m.botoes[0];
+}
+
 /* ------------------------------------------------------------ gaveta do caso */
 async function abrirCaso(id, aba = 'resumo') {
   const d = await api(`/api/casos/${id}`).catch(erro);
@@ -262,7 +281,7 @@ async function abrirCaso(id, aba = 'resumo') {
             await api(`/api/casos/${id}`, { method: 'PATCH', body: b }); toast('Caso salvo.', 'ok'); recarrega('resumo');
           }) }, 'Salvar'),
           me.datajud ? h('button', { class: 'btn', disabled: !c.numero_cnj || !me.datajud, title: me.datajud ? '' : 'Defina DATAJUD_API_KEY em .env.local para ativar', onclick: guard(async () => { const r = await api(`/api/casos/${id}/datajud`, { method: 'POST' }); toast(`DataJud: ${r.novos} movimentações novas.`, 'ok'); recarrega('andamentos'); }) }, 'Buscar no DataJud') : null,
-          me.role === 'admin' ? h('button', { class: 'btn danger right', onclick: guard(async () => { if (!shade.dataset.conf) { shade.dataset.conf = 1; toast('Clique de novo em "Excluir caso" para confirmar.'); return; } await api(`/api/casos/${id}`, { method: 'DELETE' }); fechar(); }) }, 'Excluir caso') : null));
+          me.role === 'admin' ? h('button', { class: 'btn danger right', onclick: () => excluirCasoDialog(c, d, () => fechar()) }, 'Excluir caso') : null));
     },
     andamentos: () => {
       const dt = h('input', { type: 'date', value: new Date().toISOString().slice(0, 10) }), tx = h('textarea', { placeholder: 'Cole aqui o andamento como aparece no tribunal...' });
