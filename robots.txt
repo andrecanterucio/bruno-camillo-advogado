@@ -1,5 +1,9 @@
 User-agent: *
 Allow: /
+Disallow: /login
+Disallow: /painel
+Disallow: /portal
+Disallow: /api/
 
 User-agent: GPTBot
 Allow: /

@@ -1,0 +1,8 @@
+.git
+.vercel
+data
+node_modules
+.env.local
+imagens
+*.docx
+.vercelignore
