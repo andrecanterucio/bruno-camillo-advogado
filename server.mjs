@@ -25,6 +25,7 @@ const { ipDoCliente, dentroDoLimite, validaSenha, cpfValido } = await import('./
 const T = await import('./lib/termos.mjs');
 const { avisoSemNovidade } = await import('./lib/avisos.mjs');
 const { descreve: descreveAuditoria } = await import('./lib/auditoria.mjs');
+const { avisaInteresse } = await import('./lib/email.mjs');
 const SENHA_FALSA = hashPassword('senha-falsa-para-igualar-o-tempo-de-resposta');
 
 const PORT = +(process.env.PORT || 3000);
@@ -676,6 +677,9 @@ R('POST', '/api/addons/:id/interesse', ({ user, params }) => {
   if (!ADDONS.some((a) => a.id === params.id)) throw new HttpError(404, 'Add-on desconhecido.');
   run('INSERT INTO addon_interesse(addon,user_id,criado_em) VALUES(?,?,?)', params.id, user.id, now());
   audit(user.id, 'addon.interesse', params.id);
+  // sinal de venda para a ZACDA: e-mail em segundo plano, sem atrasar nem derrubar a resposta
+  const add = ADDONS.find((a) => a.id === params.id);
+  avisaInteresse({ addon: add.nome, quem: user.nome, total: get('SELECT COUNT(*) n FROM addon_interesse WHERE addon=?', params.id).n, totalGeral: get('SELECT COUNT(*) n FROM addon_interesse').n });
   return { ok: true };
 });
 R('GET', '/api/auditoria', ({ user }) => { exigeAdmin(user); return all('SELECT a.*, u.nome FROM auditoria a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200').map(descreveAuditoria); });
