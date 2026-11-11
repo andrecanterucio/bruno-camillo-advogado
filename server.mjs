@@ -438,7 +438,7 @@ R('POST', '/api/casos/:id/documentos', async ({ req, user, params }) => {
   exigeStaff(user);
   const c = casoOuErro(user, params.id);
   if (!dentroDoLimite('upload', String(user.id), 30, 10 * 60e3)) throw new HttpError(429, 'Muitos envios em pouco tempo. Aguarde alguns minutos.');
-  const nome = decodeURIComponent(String(req.headers['x-filename'] || 'arquivo')).replace(/[\\/\0]/g, '_').slice(0, 150);
+  const nome = (() => { const v = String(req.headers['x-filename'] || 'arquivo'); try { return decodeURIComponent(v); } catch { return v; } })().replace(/[\\/\0]/g, '_').slice(0, 150);
   const ext = nome.includes('.') ? nome.split('.').pop().toLowerCase() : '';
   if (!EXT_OK.has(ext)) throw bad(`Tipo de arquivo não permitido (.${ext || '?'}).`);
   const buf = await readBody(req, 15 * 1024 * 1024);
@@ -470,6 +470,7 @@ R('GET', '/api/documentos/:id/download', ({ user, params, res }) => {
   if (!d) throw new HttpError(404, 'Documento não encontrado.');
   if (isStaff(user)) casoOuErro(user, d.caso_id);
   else {
+    if (!user.aceite_em) throw new HttpError(403, 'aceite');
     const ok = get('SELECT 1 x FROM casos WHERE id=? AND cliente_id=?', d.caso_id, user.cliente_id);
     if (!ok || !d.visivel_cliente) throw new HttpError(403, 'Sem acesso a este documento.');
   }
@@ -817,7 +818,7 @@ const server = http.createServer(async (req, res) => {
       if (!rota) throw new HttpError(404, 'Rota não encontrada.');
       if (req.method !== 'GET') {
         const origin = req.headers.origin;
-        if (req.headers['x-requested-with'] !== 'fetch' || (origin && new URL(origin).host !== req.headers.host)) throw new HttpError(403, 'Requisição bloqueada (CSRF).');
+        if (req.headers['x-requested-with'] !== 'fetch' || (origin && (() => { try { return new URL(origin).host !== req.headers.host; } catch { return true; } })())) throw new HttpError(403, 'Requisição bloqueada (CSRF).');
       }
       if (!dentroDoLimite('api', ipDoCliente(req), 300, 60e3)) throw new HttpError(429, 'Muitas requisições. Aguarde um minuto.');
       const user = userFromReq(req);
