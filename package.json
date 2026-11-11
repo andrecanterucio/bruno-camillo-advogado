@@ -1,6 +1,15 @@
 {
   "name": "bruno-camillo-advogado-site",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "description": "Landing page do advogado Bruno Camillo. Site estático; sem build. Leads vão para o painel do cliente (zacda-commerce)."
+  "type": "module",
+  "description": "Site do advogado Bruno Camillo + painel (/login, /painel, /portal). Sem dependências; Node 22+ (node:sqlite). Leads vão para o painel do cliente (zacda-commerce).",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "dev": "node server.mjs --demo",
+    "start": "node server.mjs",
+    "backup": "node scripts/backup.mjs"
+  }
 }
