@@ -160,11 +160,9 @@ VIEWS.inicio = async () => {
         h('div', { class: 'list' }, r.prazos_7d.length ? r.prazos_7d.map((p) => h('div', { class: 'row clicavel', tabindex: 0, role: 'link', onclick: () => abrirCaso(p.caso_id, 'prazos'), onkeydown: (e) => { if (e.key === 'Enter') abrirCaso(p.caso_id, 'prazos'); } },
           h('span', { class: `badge ${p.atrasado ? 'bad' : 'warn'}` }, p.atrasado ? 'Atrasado' : fmtData(p.data)),
           h('span', {}, `${p.titulo} `, h('span', { class: 'muted small' }, `· ${p.caso}`)))) : h('p', { class: 'muted' }, 'Nenhum prazo pendente.'))),
-      r.ia ? h('div', { class: 'card stack' }, h('h2', {}, 'Fontes e custo do piloto'),
-        h('p', { class: 'small' }, h('span', { class: 'badge ok' }, 'grátis'), ' DJEN (publicações por OAB), banco de dados local, portal do cliente, importação do Trello.'),
-        h('p', { class: 'small' }, h('span', { class: `badge ${me.ia ? 'gold' : 'bad'}` }, me.ia ? `custo ZACDA` : 'sem chave'), ` IA ${r.ia.modelo}: ${r.ia.resumos} resumos, custo estimado R$ ${r.ia.custo_estimado_brl.toFixed(4).replace('.', ',')}.`),
-        h('p', { class: 'small muted' }, 'Tudo o que é pago aparece em Add-ons, só para medir interesse. Nada é cobrado no piloto.'),
-        h('div', { class: 'row' }, h('a', { class: 'btn sm', href: '#/plano' }, 'Meu plano e consumo'), h('a', { class: 'btn sm', href: '#/addons' }, 'Ver add-ons'))) : null));
+      h('div', { class: 'card stack' }, h('h2', {}, 'Meu plano'),
+        h('p', { class: 'small muted' }, 'Veja quanto do armazenamento e dos resumos do mês você já usou, e os serviços extras disponíveis.'),
+        h('div', { class: 'row' }, h('a', { class: 'btn sm', href: '#/plano' }, 'Meu plano e consumo'), h('a', { class: 'btn sm', href: '#/addons' }, 'Ver add-ons')))));
 };
 
 /* ------------------------------------------------------------------ kanban */
@@ -468,8 +466,23 @@ VIEWS.equipe = async () => {
 
 VIEWS.auditoria = async () => {
   const l = await api('/api/auditoria');
-  main.replaceChildren(secao('Auditoria'), h('p', { class: 'small muted' }, 'Últimas 200 ações: quem entrou, abriu, baixou ou aprovou. Útil para LGPD e para o sigilo profissional.'),
-    h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Quando', 'Quem', 'Ação', 'Alvo'].map((t) => h('th', {}, t)))), h('tbody', {}, l.map((a) => h('tr', {}, h('td', {}, a.criado_em.replace('T', ' ').slice(0, 16)), h('td', {}, a.nome || '-'), h('td', {}, a.acao), h('td', {}, a.alvo || '')))))));
+  const CATS = [['', 'Todas as ações'], ['acesso', 'Acessos e aceites'], ['casos', 'Casos e andamentos'], ['documentos', 'Documentos'], ['clientes', 'Clientes e portal'], ['ia', 'IA'], ['equipe', 'Equipe']];
+  const pessoas = [...new Set(l.map((a) => a.nome || '-'))].sort();
+  const fPessoa = h('select', { 'aria-label': 'Filtrar por pessoa' }, opt('', 'Todas as pessoas'), pessoas.map((n) => opt(n, n)));
+  const fCat = h('select', { 'aria-label': 'Filtrar por tipo de ação' }, CATS.map(([v, t]) => opt(v, t)));
+  const corpo = h('tbody');
+  const abrir = (a) => { if (a.link?.tipo === 'caso') abrirCaso(a.link.id); else if (a.link?.tipo === 'cliente') location.hash = '#/clientes'; };
+  const desenha = () => {
+    const f = l.filter((a) => (!fPessoa.value || (a.nome || '-') === fPessoa.value) && (!fCat.value || a.categoria === fCat.value));
+    corpo.replaceChildren(...(f.length ? f.map((a) => h('tr', a.link ? { class: 'clicavel', tabindex: 0, role: 'link', 'aria-label': `${a.texto}: abrir`, onclick: () => abrir(a), onkeydown: (e) => { if (e.key === 'Enter') abrir(a); } } : {},
+      h('td', {}, a.criado_em.replace('T', ' ').slice(0, 16)), h('td', {}, a.nome || '-'), h('td', {}, a.texto),
+      h('td', {}, a.alvo_texto ? (a.link ? h('a', { href: '#', onclick: (e) => { e.preventDefault(); e.stopPropagation(); abrir(a); } }, a.alvo_texto) : a.alvo_texto) : ''))) : [h('tr', {}, h('td', { colspan: 4, class: 'muted' }, 'Nenhum registro com esses filtros.'))]));
+  };
+  [fPessoa, fCat].forEach((s) => s.addEventListener('change', desenha));
+  desenha();
+  main.replaceChildren(secao('Auditoria'), h('p', { class: 'small muted' }, 'Últimas 200 ações: quem entrou, abriu, baixou ou aprovou. Clique em uma linha com link para abrir o caso. Útil para LGPD e para o sigilo profissional.'),
+    h('div', { class: 'grid2' }, campo('Pessoa', fPessoa), campo('Tipo de ação', fCat)),
+    h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Quando', 'Quem', 'Ação', 'Alvo'].map((t) => h('th', {}, t)))), corpo)));
 };
 
 /* -------------------------------------------------------------------- boot */

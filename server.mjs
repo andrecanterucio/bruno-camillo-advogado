@@ -24,6 +24,7 @@ const { rid, digits, formatCnj, sha256, parseCookies } = await import('./lib/uti
 const { ipDoCliente, dentroDoLimite, validaSenha, cpfValido } = await import('./lib/ratelimit.mjs');
 const T = await import('./lib/termos.mjs');
 const { avisoSemNovidade } = await import('./lib/avisos.mjs');
+const { descreve: descreveAuditoria } = await import('./lib/auditoria.mjs');
 const SENHA_FALSA = hashPassword('senha-falsa-para-igualar-o-tempo-de-resposta');
 
 const PORT = +(process.env.PORT || 3000);
@@ -126,7 +127,7 @@ R('POST', '/api/auth/logout', ({ req, res }) => { destroySession(req); res.setHe
 // No piloto nada é cobrado; os valores do plano pago só aparecem antes de qualquer cobrança.
 const fichaAtual = () => ({
   plano: PLANO.nome, mensalidade: 'R$ 0: piloto gratuito, nada é cobrado',
-  itens: [['Processos acompanhados', String(PLANO.processos)], ['Usuários da equipe', String(PLANO.usuarios)], ['Armazenamento de documentos', `${PLANO.armazenamento_gb} GB`],
+  itens: [['Processos acompanhados', 'ilimitados (uso justo)'], ['Usuários da equipe', 'ilimitados (uso justo)'], ['Armazenamento de documentos', `${PLANO.armazenamento_gb} GB`],
     ['Resumos de andamento por IA, por mês', String(PLANO.resumos_mes)], ['Clientes com acesso ao Portal', 'ilimitados'], ['Fonte de publicações', 'DJEN']],
   nota: 'Depois do piloto, os valores do plano pago serão apresentados antes de qualquer cobrança e só valem com novo aceite.',
   capturada_em: now(),
@@ -256,7 +257,6 @@ R('GET', '/api/resumo', ({ user }) => {
     rascunhos: get(`SELECT COUNT(*) n FROM andamentos a JOIN casos c ON c.id=a.caso_id WHERE ${w} AND a.status='rascunho'`, ...p).n,
     publicacoes_novas: user.role === 'admin' ? get('SELECT COUNT(*) n FROM publicacoes WHERE lida=0').n : null,
     leads: user.role === 'admin' ? get("SELECT COUNT(*) n FROM clientes WHERE status='lead'").n : null,
-    ia: user.role === 'admin' ? I.iaResumoUso() : null,
   };
 });
 R('GET', '/api/kanban', ({ user }) => {
@@ -599,15 +599,14 @@ R('POST', '/api/trello/importar', async ({ user, req }) => {
 // --- add-ons (validação de interesse, sem cobrança)
 const ADDONS = [
   { id: 'whatsapp', nome: 'Aviso automático ao cliente por WhatsApp', desc: 'Envia ao cliente o andamento aprovado, pela API oficial do WhatsApp (sem risco de banimento).', preco: 'Referência: setup R$ 150 + mensagens repassadas', custo: 'Meta: aprox. R$ 0,035 por mensagem de utilidade' },
-  { id: 'ia_avancada', nome: 'IA avançada: documentos, chat com o processo e minutas', desc: 'Resume PDFs e peças longas. Pode usar a chave de IA do próprio escritório.', preco: 'Referência: R$ 79/mês (ou R$ 0 com chave própria)', custo: 'Custo variável por uso' },
-  { id: 'armazenamento', nome: '+50 GB de armazenamento', desc: 'Mais espaço para documentos dos casos.', preco: 'Referência: R$ 29/mês', custo: 'Marginal' },
+  { id: 'ia_avancada', nome: 'IA avançada: documentos, chat com o processo e minutas', desc: 'Resume PDFs e peças longas, conversa com o processo e sugere rascunho de minuta. Você revisa tudo antes de usar. Pode usar a chave de IA do próprio escritório.', preco: 'Referência: R$ 79/mês (ou R$ 0 com chave própria)', custo: 'Com chave própria, o uso é cobrado direto pelo fornecedor' },
+  { id: 'armazenamento', nome: '+50 GB de armazenamento', desc: 'Mais espaço para documentos dos casos.', preco: 'Referência: R$ 29/mês', custo: 'Valor fixo mensal' },
   { id: 'assinatura', nome: 'Assinatura eletrônica de contratos', desc: 'Contrato de honorários e procuração assinados pelo cliente no portal.', preco: 'Referência: sob consulta', custo: 'Depende do provedor' },
   { id: 'fonte_dados', nome: 'Fonte de dados própria (Escavador, Judit ou Vigilant)', desc: 'O escritório contrata a API de um fornecedor e informa a chave no painel; a ZACDA integra e mantém a conexão. Cobre mais tribunais e diários oficiais que o DJEN.', preco: 'Valor definido após validar o interesse', custo: 'O fornecedor é pago direto pelo escritório' },
 ];
 // Complementos extras e detalhes por serviço (alimentam a página de cada card).
 ADDONS.push(
-  { id: 'processos_extra', nome: '+100 processos acompanhados', desc: 'Aumenta o limite de processos do plano.', preco: 'Referência: R$ 49/mês', custo: 'Custo marginal baixo (DJEN e DataJud são grátis)' },
-  { id: 'resumos_extra', nome: '+100 resumos de andamento por IA', desc: 'Pacote extra de resumos em linguagem simples, quando a franquia do mês acaba.', preco: 'Referência: R$ 19 por pacote', custo: 'Custo da IA: cerca de R$ 0,001 por resumo' },
+  { id: 'resumos_extra', nome: '+100 resumos de andamento por IA', desc: 'Pacote extra de resumos em linguagem simples, quando a franquia do mês acaba.', preco: 'Referência: R$ 19 por pacote', custo: 'Valor fixo por pacote' },
   { id: 'atendente', nome: 'ZACDA Atendente: triagem no WhatsApp e dossiê', desc: 'Atende por WhatsApp quem procura o escritório, organiza o caso e entrega o dossiê para o advogado revisar. É o produto ZACDA Advocacia atual.', preco: 'A partir de R$ 397/mês + implantação R$ 1.197', custo: 'Franquia de conversas e dossiês; excedente R$ 2,00 por conversa e R$ 9,00 por dossiê' },
 );
 const DETALHES = {
@@ -617,23 +616,21 @@ const DETALHES = {
     limites: 'Tabela da Meta muda; os valores acima precisam ser conferidos na tabela oficial antes de vender.' },
   ia_avancada: {
     como: ['Resume PDFs e peças longas, conversa com o processo e sugere rascunho de minuta.', 'O advogado revisa tudo antes de usar (Recomendação 001/2024 da OAB).', 'Pode usar a chave de IA do próprio escritório: o custo vai direto ao fornecedor.'],
-    custos: [['Referência', 'R$ 79/mês, ou R$ 0 com chave própria'], ['Resumo simples de andamento', 'já no plano (cerca de R$ 0,001 cada)'], ['Documento longo', 'centavos a poucos reais por documento, conforme o tamanho (estimativa)']],
+    custos: [['Referência', 'R$ 79/mês'], ['Com a chave de IA do próprio escritório', 'R$ 0 de mensalidade; o uso é cobrado direto pelo fornecedor da chave'], ['Resumo simples de andamento', 'já incluído no plano']],
     limites: 'Em segredo de justiça a IA continua desligada.' },
   armazenamento: {
     como: ['Mais espaço para os documentos dos casos.', 'Os arquivos ficam fora da área pública e só baixam com login.'],
-    custos: [['+50 GB', 'R$ 29/mês'], ['Custo ZACDA (estimativa)', 'cerca de R$ 0,12 por GB/mês']], limites: 'Limite de 15 MB por arquivo.' },
+    custos: [['+50 GB', 'R$ 29/mês']], limites: 'Limite de 15 MB por arquivo.' },
   assinatura: {
     como: ['Contrato de honorários e procuração assinados pelo cliente dentro do portal.'],
-    custos: [['Referência', 'sob consulta'], ['Custo do provedor de assinatura', 'a definir']], limites: 'Depende da escolha do provedor.' },
+    custos: [['Referência', 'sob consulta']], limites: 'Depende da escolha do provedor.' },
   fonte_dados: {
     como: ['O escritório contrata a API do fornecedor (Escavador, Judit ou Vigilant) e informa a chave no painel.', 'A ZACDA integra e mantém a conexão; não revende o acesso nem o dado.', 'Útil para monitorar tribunais além do DJEN, como a Justiça do Trabalho (que o Vigilant não cobre) e diários oficiais.'],
     custos: [['Integração e manutenção ZACDA', 'valor definido após validar o interesse (taxa única mais mensalidade pequena)'], ['Escavador (pago pelo escritório)', 'preço por negociação de volume'], ['Judit (pago pelo escritório)', 'a partir de R$ 1.000/mês'], ['Vigilant (pago pelo escritório)', 'por consulta: 1 crédito (R$ 0,07 a R$ 0,10) por tribunal a cada 10 processos; monitoramento custa 5 créditos por verificação']],
     limites: 'Cada fornecedor tem formato e termos próprios e o contrato é do escritório. Sem SLA do fornecedor: o prazo continua sendo conferido pelo advogado.' },
-  processos_extra: {
-    como: ['Aumenta o número de processos acompanhados pelo DJEN e pelo DataJud.'], custos: [['+100 processos', 'R$ 49/mês']], limites: 'DJEN e DataJud são fontes públicas gratuitas.' },
   resumos_extra: {
     como: ['Libera mais resumos em linguagem simples depois que a franquia do mês acaba.', 'Todos passam pela aprovação do advogado antes de aparecer no portal.'],
-    custos: [['Pacote de +100 resumos', 'R$ 19'], ['Custo da IA (Haiku)', 'cerca de R$ 0,001 por resumo']], limites: 'Franquia renova todo mês.' },
+    custos: [['Pacote de +100 resumos', 'R$ 19']], limites: 'Franquia renova todo mês.' },
   atendente: {
     como: ['Atende por WhatsApp quem procura o escritório, 24 horas, e se apresenta como assistente virtual.', 'Organiza fatos, documentos e áudios e avisa o advogado em caso de urgência.', 'Gera o dossiê do caso, um rascunho que o advogado confere antes de usar.', 'Não dá parecer, não fala de honorários nem de prazo, e não faz captação ativa.'],
     custos: [['Solo', 'R$ 397/mês + R$ 1.197 (100 conversas, 25 dossiês)'], ['Escritório', 'R$ 697/mês + R$ 1.997 (250 conversas, 60 dossiês)'], ['Banca', 'R$ 1.297/mês + R$ 2.997 (500 conversas, 125 dossiês)'], ['Excedente', 'R$ 2,00 por conversa; dossiê avulso R$ 9,00 (R$ 19,00 com anexo de viabilidade)']],
@@ -641,7 +638,7 @@ const DETALHES = {
 };
 
 // Plano do piloto e limites (referência: Gestão e Portal "Solo"). Ajustável por ambiente.
-const PLANO = { nome: 'Piloto gratuito (Gestão e Portal)', referencia: 'Depois do piloto, referência Solo: R$ 147/mês', processos: 100, usuarios: 3, armazenamento_gb: 10, resumos_mes: 300 };
+const PLANO = { nome: 'Piloto gratuito (Gestão e Portal)', referencia: 'Depois do piloto, referência Solo: R$ 147/mês', processos: null, usuarios: null, armazenamento_gb: 10, resumos_mes: 300 };
 R('GET', '/api/plano', ({ user }) => {
   exigeAdmin(user);
   const mes = now().slice(0, 7);
@@ -657,8 +654,8 @@ R('GET', '/api/plano', ({ user }) => {
   return {
     plano: PLANO, mes,
     cobertos: [
-      { nome: 'Processos acompanhados', usado: u.processos, limite: PLANO.processos, unidade: 'processos', extra: 'Acima do limite: +100 processos por R$ 49/mês', addon: 'processos_extra' },
-      { nome: 'Usuários da equipe', usado: u.usuarios, limite: PLANO.usuarios, unidade: 'usuários', extra: 'Usuário adicional: sob consulta', addon: null },
+      { nome: 'Processos acompanhados', usado: u.processos, limite: null, unidade: 'processos', extra: 'Sem limite (uso justo)', addon: null },
+      { nome: 'Usuários da equipe', usado: u.usuarios, limite: null, unidade: 'usuários', extra: 'Sem limite (uso justo)', addon: null },
       { nome: 'Armazenamento de documentos', usado: u.bytes, limite: PLANO.armazenamento_gb * 1073741824, unidade: 'bytes', extra: 'Acima do limite: +50 GB por R$ 29/mês', addon: 'armazenamento' },
       { nome: 'Resumos de andamento por IA (este mês)', usado: u.resumos, limite: PLANO.resumos_mes, unidade: 'resumos', extra: 'Acima do limite: +100 resumos por R$ 19', addon: 'resumos_extra' },
       { nome: 'Clientes com acesso ao portal', usado: u.clientes_portal, limite: null, unidade: 'clientes', extra: 'Sem limite', addon: null },
@@ -681,7 +678,7 @@ R('POST', '/api/addons/:id/interesse', ({ user, params }) => {
   audit(user.id, 'addon.interesse', params.id);
   return { ok: true };
 });
-R('GET', '/api/auditoria', ({ user }) => { exigeAdmin(user); return all('SELECT a.*, u.nome FROM auditoria a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200'); });
+R('GET', '/api/auditoria', ({ user }) => { exigeAdmin(user); return all('SELECT a.*, u.nome FROM auditoria a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200').map(descreveAuditoria); });
 
 // --- portal do cliente
 function exigeCliente(u) {
