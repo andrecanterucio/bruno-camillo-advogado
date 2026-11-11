@@ -108,6 +108,14 @@ function casoOuErro(u, id) {
   if (u.role === 'funcionario' && c.responsavel_id !== u.id) throw new HttpError(403, 'Este caso não está atribuído a você.');
   return c;
 }
+// Empresa (cliente) que a pessoa enxerga: o admin vê todas; a funcionária, as que criou ou onde tem caso sob sua responsabilidade
+// (a MESMA regra da listagem em GET /api/clientes). Toda escrita que aponta para um cliente confere isto, para a regra
+// "ter caso sob responsabilidade" não virar escada de privilégio.
+function exigeClienteVisivel(u, clienteId) {
+  if (u.role === 'admin') return;
+  const ok = get('SELECT 1 x FROM clientes cl WHERE cl.id=? AND (cl.criado_por=? OR cl.id IN (SELECT cliente_id FROM casos WHERE responsavel_id=?))', clienteId, u.id, u.id);
+  if (!ok) throw new HttpError(403, 'Este cliente não está sob sua responsabilidade.');
+}
 const filtroCaso = (u) => (u.role === 'admin' ? ['1=1', []] : ['c.responsavel_id=?', [u.id]]);
 const bool = (v) => (v ? 1 : 0);
 
@@ -291,6 +299,7 @@ R('POST', '/api/fases', ({ user, body }) => {
 // --- casos
 R('POST', '/api/casos', ({ user, body }) => {
   exigeStaff(user);
+  if (body.cliente_id) exigeClienteVisivel(user, body.cliente_id);
   const titulo = String(body.titulo || '').trim().slice(0, 200);
   if (!titulo) throw bad('Informe o título do caso.');
   const fase = body.fase_id || get('SELECT id FROM fases ORDER BY ordem LIMIT 1').id;
@@ -316,6 +325,7 @@ R('GET', '/api/casos/:id', ({ user, params }) => {
 R('PATCH', '/api/casos/:id', ({ user, params, body }) => {
   exigeStaff(user);
   casoOuErro(user, params.id);
+  if ('cliente_id' in body && body.cliente_id) exigeClienteVisivel(user, body.cliente_id);
   const campos = ['titulo', 'cliente_id', 'area', 'fase_id', 'segredo', 'etiquetas', 'notas', 'ordem', 'papel_cliente'];
   if (user.role === 'admin') campos.push('responsavel_id');
   if ('papel_cliente' in body && body.papel_cliente && !['autor', 'reu', 'outro'].includes(body.papel_cliente)) throw bad('Posição do cliente inválida.');
@@ -518,6 +528,7 @@ R('POST', '/api/clientes', ({ user, body }) => {
 });
 R('PATCH', '/api/clientes/:id', ({ user, params, body }) => {
   exigeStaff(user);
+  exigeClienteVisivel(user, params.id);
   const sets = [], vals = [];
   for (const k of ['nome', 'telefone', 'email', 'origem', 'status', 'notas']) if (k in body) { sets.push(`${k}=?`); vals.push(body[k] === '' ? null : body[k]); }
   if (!sets.length) throw bad('Nada para atualizar.');
