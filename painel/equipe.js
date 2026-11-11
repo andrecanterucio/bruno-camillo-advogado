@@ -43,16 +43,19 @@ const todosMarcados = (checks) => Object.values(checks).every((k) => k.checked);
 async function contratoDialog() {
   const c = await api('/api/contrato');
   const caixa = h('div', { class: 'docbox', tabindex: 0, 'aria-label': 'Texto do contrato' }, renderMarkdown(c.corpo || c.texto));
-  const status = h('p', { class: 'small muted' }, '↓ Role o contrato até o fim para habilitar o aceite');
+  const status = h('p', { class: 'small muted' }, '↓ Role o contrato até o fim para habilitar o botão "Assinar e continuar"');
   const nome = h('input', { autocomplete: 'name', placeholder: 'Seu nome completo' }), cpf = h('input', { inputmode: 'numeric', placeholder: '000.000.000-00' }), oab = h('input', { placeholder: 'OAB/UF nº' });
-  const geral = h('input', { type: 'checkbox', disabled: true });
-  const checks = Object.fromEntries(c.ciencias.map((x) => [x.id, h('input', { type: 'checkbox', disabled: true })]));
+  // checkboxes sempre clicáveis (no celular o aceite não pode depender de rolagem); a rolagem até o fim libera só o botão
+  const geral = h('input', { type: 'checkbox' });
+  const checks = Object.fromEntries(c.ciencias.map((x) => [x.id, h('input', { type: 'checkbox' })]));
   let rolou = false, botao = null;
   const pronto = () => rolou && nome.value.trim().length >= 3 && cpf.value.replace(/\D/g, '').length === 11 && oab.value.trim().length >= 3 && geral.checked && todosMarcados(checks);
   const atualiza = prontoPara(null, pronto); // substituído abaixo, quando o botão existir
   const refresh = () => { if (botao) botao.disabled = !pronto(); };
-  const libera = () => { rolou = true; status.textContent = '✓ Contrato lido. Preencha seus dados e marque as confirmações.'; status.className = 'small ok-text'; [geral, ...Object.values(checks)].forEach((k) => { k.disabled = false; }); refresh(); };
-  caixa.addEventListener('scroll', () => { if (!rolou && caixa.scrollHeight - caixa.scrollTop <= caixa.clientHeight + 40) libera(); });
+  const libera = () => { rolou = true; status.textContent = '✓ Contrato lido. Preencha seus dados e marque as confirmações.'; status.className = 'small ok-text'; refresh(); };
+  const naBase = () => caixa.scrollHeight - caixa.scrollTop <= caixa.clientHeight + 80;
+  ['scroll', 'touchend', 'wheel'].forEach((ev) => caixa.addEventListener(ev, () => { if (!rolou && naBase()) libera(); }, { passive: true }));
+  caixa.addEventListener('keydown', () => setTimeout(() => { if (!rolou && naBase()) libera(); }, 50));
   [nome, cpf, oab].forEach((i) => i.addEventListener('input', refresh));
   [geral, ...Object.values(checks)].forEach((i) => i.addEventListener('change', refresh));
   const corpo = h('div', { class: 'stack' },
