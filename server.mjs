@@ -86,12 +86,17 @@ function servirArquivo(res, file, { csp = false, cache = 'no-cache' } = {}) {
 /* ------------------------------------------------------- site estático (whitelist) */
 const SITE_OK = /^(index\.html|robots\.txt|sitemap\.xml|llms\.txt|google[\w]+\.html|assets|cartao|privacidade|direito-[\w-]+)$/;
 function servirSite(res, pathname) {
-  let rel = decodeURIComponent(pathname).replace(/^\/+/, '');
+  let rel;
+  try { rel = decodeURIComponent(pathname).replace(/^\/+/, ''); } catch { return false; } // %-escape malformado: não é arquivo do site
+  // Nenhum segmento ".." (nem "\" nem NUL) depois de decodificar: "..%2f" só vira "../" aqui, depois da normalização da URL.
+  if (/(^|[\/])\.\.([\/]|$)|\|\0/.test(rel)) return false;
   const top = rel.split('/')[0];
   if (rel === '') rel = 'index.html';
   else if (!SITE_OK.test(top)) return false;
   let file = path.resolve(ROOT, rel);
-  if (!file.startsWith(ROOT + path.sep)) return false;
+  // o arquivo precisa ficar DENTRO da pasta pública (ou ser um dos arquivos soltos da raiz), não em qualquer lugar de ROOT
+  const base = path.resolve(ROOT, rel === 'index.html' ? 'index.html' : top);
+  if (rel.includes('/') ? !file.startsWith(base + path.sep) : file !== base) return false;
   if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, 'index.html');
   const cache = rel.startsWith('assets/') ? 'public, max-age=3600' : 'no-cache';
   return servirArquivo(res, file, { cache });
