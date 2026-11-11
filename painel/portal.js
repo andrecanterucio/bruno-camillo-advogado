@@ -43,6 +43,7 @@ async function detalhe(id) {
   const d = await api(`/api/portal/casos/${id}`);
   app.replaceChildren(cabecalho(true),
     h('div', { class: 'stack' }, h('h1', {}, d.caso.titulo), h('div', { class: 'row' }, h('span', { class: 'badge gold' }, d.caso.fase), d.caso.area ? h('span', { class: 'badge' }, d.caso.area) : null, d.caso.numero_cnj ? h('span', { class: 'small muted' }, `Processo ${d.caso.numero_cnj}`) : null),
+      d.aviso_sem_novidade ? h('p', { class: 'notice', role: 'status' }, d.aviso_sem_novidade) : null,
       h('h2', {}, 'O que aconteceu'),
       d.andamentos.length ? h('div', { class: 'timeline' }, d.andamentos.map((a) => h('div', { class: 't' }, h('b', {}, fmtData(a.data)), h('p', {}, a.texto_simples), a.ia ? h('span', { class: 'small muted' }, 'Resumo feito com ajuda de IA e revisado pelo seu advogado.') : null)))
         : h('p', { class: 'muted' }, 'Ainda não há novidades publicadas. Assim que houver, aparecem aqui.'),

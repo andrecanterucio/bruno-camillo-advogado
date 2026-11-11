@@ -23,6 +23,7 @@ const { bootstrap, DEMO } = await import('./lib/seed.mjs');
 const { rid, digits, formatCnj, sha256, parseCookies } = await import('./lib/util.mjs');
 const { ipDoCliente, dentroDoLimite, validaSenha, cpfValido } = await import('./lib/ratelimit.mjs');
 const T = await import('./lib/termos.mjs');
+const { avisoSemNovidade } = await import('./lib/avisos.mjs');
 const SENHA_FALSA = hashPassword('senha-falsa-para-igualar-o-tempo-de-resposta');
 
 const PORT = +(process.env.PORT || 3000);
@@ -700,6 +701,7 @@ R('GET', '/api/portal/casos/:id', ({ user, params }) => {
   audit(user.id, 'portal.ver_caso', params.id);
   return {
     caso: c,
+    aviso_sem_novidade: avisoSemNovidade(c.id),
     andamentos: all("SELECT id, data, texto_simples, ia FROM andamentos WHERE caso_id=? AND status='aprovado' AND visivel_cliente=1 ORDER BY data DESC, id DESC", c.id),
     documentos: all('SELECT id, nome, tamanho, criado_em FROM documentos WHERE caso_id=? AND visivel_cliente=1 ORDER BY id DESC', c.id),
   };
