@@ -465,6 +465,42 @@ R('GET', '/api/documentos/:id/download', ({ user, params, res }) => {
   return undefined;
 });
 
+// --- exportar tudo (portabilidade: o advogado leva os dados dele)
+const nomeSeguro = (s) => String(s || 'arquivo').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 80) || 'arquivo';
+R('GET', '/api/exportar-tudo', async ({ user, res }) => {
+  exigeAdmin(user);
+  if (!dentroDoLimite('exportar-tudo', String(user.id), 3, 600e3)) throw new HttpError(429, 'Você já exportou várias vezes agora há pouco. Aguarde alguns minutos.');
+  const { ZipStream } = await import('./lib/zip.mjs');
+  const quando = now();
+  const tabelas = {
+    clientes: all('SELECT * FROM clientes'), fases: all('SELECT * FROM fases'), casos: all('SELECT * FROM casos'),
+    andamentos: all('SELECT * FROM andamentos'), prazos: all('SELECT * FROM prazos'), publicacoes: all('SELECT * FROM publicacoes'),
+    documentos: all('SELECT id, caso_id, nome, mime, tamanho, visivel_cliente, enviado_por, criado_em FROM documentos'),
+    usuarios: all('SELECT id, nome, email, role, ativo, cliente_id, aceite_em, criado_em FROM users'), // sem senha
+    contratos_aceite: all('SELECT * FROM contratos_aceite'), ia_termo_aceite: all('SELECT * FROM ia_termo_aceite'),
+    ia_opcao_recusa: all('SELECT * FROM ia_opcao_recusa'), ia_caso_consentimento: all('SELECT * FROM ia_caso_consentimento'),
+    auditoria: all('SELECT * FROM auditoria'),
+  };
+  const docs = all('SELECT d.id, d.nome, d.arquivo, d.caso_id, c.titulo FROM documentos d LEFT JOIN casos c ON c.id=d.caso_id ORDER BY d.id');
+  audit(user.id, 'dados.exportar_tudo', `${docs.length} documento(s)`);
+  res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': `attachment; filename="dados-escritorio-${quando.slice(0, 10)}.zip"`, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'" });
+  const zip = new ZipStream(res);
+  const leiame = `Exportação completa dos dados do escritório, gerada em ${quando}.\r\n\r\nCONTEÚDO\r\n- dados.json: clientes, casos, andamentos, prazos, publicações, documentos (lista), usuários (sem senhas), aceites e registro de auditoria.\r\n- documentos/: os arquivos enviados, em uma pasta por caso.\r\n\r\nCUIDADOS\r\n- Este arquivo contém dados pessoais e sigilosos de clientes. Guarde em local protegido e não envie por e-mail comum.\r\n- Os arquivos dos documentos estão sem criptografia neste pacote.\r\n- Senhas e sessões não são exportadas.\r\n`;
+  try {
+    await zip.adiciona('LEIA-ME.txt', Buffer.from(leiame, 'utf8'));
+    await zip.adiciona('dados.json', Buffer.from(JSON.stringify({ exportado_em: quando, ...tabelas }, null, 2), 'utf8'));
+    let ausentes = 0;
+    for (const d of docs) {
+      const file = path.join(UPLOAD_DIR, d.arquivo);
+      if (!fs.existsSync(file)) { ausentes++; continue; }
+      await zip.adiciona(`documentos/caso-${d.caso_id}-${nomeSeguro(d.titulo)}/${d.id}-${nomeSeguro(d.nome)}`, fs.createReadStream(file));
+    }
+    if (ausentes) await zip.adiciona('ARQUIVOS-AUSENTES.txt', Buffer.from(`${ausentes} documento(s) listados em dados.json não foram encontrados no servidor.\r\n`, 'utf8'));
+    await zip.fecha();
+  } catch (e) { console.warn(`Exportação interrompida: ${e.message}`); res.destroy(); }
+  return undefined;
+});
+
 // --- clientes (CRM leve) e acessos
 R('GET', '/api/clientes', ({ user }) => {
   exigeStaff(user);

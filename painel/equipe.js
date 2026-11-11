@@ -359,11 +359,11 @@ VIEWS.clientes = async () => {
         h('td', {}, c.user_id ? h('span', { class: 'badge ok' }, 'com acesso') : (me.role === 'admin' ? h('button', { class: 'btn sm', onclick: () => (c.email ? acesso(c) : pedirEmail(c)) }, 'Criar acesso') : '')),
         me.role === 'admin' ? h('td', {}, h('div', { class: 'row' },
           h('a', { class: 'btn sm ghost', href: `/api/clientes/${c.id}/exportar` }, 'Exportar'),
-          h('button', { class: 'btn sm danger', onclick: guard(async () => {
-            if (await confirmar('Anonimizar cliente', `Os dados pessoais de ${c.nome} serão apagados (nome, contatos, notas e acesso ao portal). Os casos e documentos continuam no escritório, sem identificação do cliente. Não dá para desfazer.`, 'Anonimizar', true)) {
-              await api(`/api/clientes/${c.id}/anonimizar`, { method: 'POST' }); toast('Cliente anonimizado.', 'ok'); VIEWS.clientes();
+          h('button', { class: 'btn sm danger', title: 'Apaga nome, contatos e acesso ao portal; mantém os processos sem identificar o cliente', onclick: guard(async () => {
+            if (await confirmar(`Apagar os dados pessoais de ${c.nome}?`, 'Vamos apagar: nome, telefone, e-mail, notas e o acesso ao portal. Vamos manter: os processos, andamentos e documentos, sem o nome do cliente. Atenção: o título e as notas internas dos casos não mudam; se tiverem o nome do cliente, edite-os. Não dá para desfazer.', 'Apagar dados pessoais', true)) {
+              await api(`/api/clientes/${c.id}/anonimizar`, { method: 'POST' }); toast('Dados pessoais do cliente apagados.', 'ok'); VIEWS.clientes();
             }
-          }) }, 'Anonimizar'))) : null))))));
+          }) }, 'Apagar dados pessoais'))) : null))))));
 };
 
 /* ------------------------------------------------------------ publicações */
@@ -465,6 +465,10 @@ VIEWS.plano = async () => {
       h('tbody', {}, p.cobertos.map((i) => h('tr', {}, h('td', {}, i.nome), h('td', {}, fmtUso(i)), h('td', { class: 'barcell' }, barra(i)),
         h('td', { class: 'small' }, i.addon ? h('a', { href: `#/addons/${i.addon}` }, i.extra) : i.extra)))))),
     h('div', { class: 'card stack' }, h('h2', {}, 'Também incluído'), h('ul', { class: 'dots stack small' }, p.inclusos.map((t) => h('li', {}, t)))),
+    h('div', { class: 'card stack' }, h('h2', {}, 'Seus dados são seus'),
+      h('p', { class: 'small' }, 'Baixe uma cópia completa do que está no painel: clientes, casos, andamentos, prazos, publicações e todos os documentos enviados. Você pode guardar, levar para outro sistema ou arquivar quando quiser.'),
+      h('p', { class: 'small muted' }, 'O arquivo tem dados sigilosos de clientes e documentos sem criptografia: guarde em local protegido. Senhas não são incluídas. Cada download fica registrado na Auditoria.'),
+      h('div', {}, h('a', { class: 'btn gold', href: '/api/exportar-tudo', download: '' }, 'Baixar todos os meus dados (.zip)'))),
     h('h2', {}, 'O que está fora do plano (add-ons)'),
     h('p', { class: 'small muted' }, 'Clique para ver como funciona e quanto custa cada um. Nada é cobrado no piloto.'),
     h('div', { class: 'tablewrap' }, h('table', {}, h('thead', {}, h('tr', {}, ['Serviço', 'Valor de referência', 'Custo a mais'].map((t) => h('th', {}, t)))),
