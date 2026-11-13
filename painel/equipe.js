@@ -1,4 +1,5 @@
 import { h, api, toast, fmtData, fmtBytes, AREAS, senhaDialog, sair, modal, confirmar, renderMarkdown, inlineMd } from './common.js';
+import { iniciais, classePrazo, rotuloAntecedencia, ANTECEDENCIAS, avisosDialog, atualizaSino, registraServiceWorker } from './avisos.js';
 
 const main = document.getElementById('main');
 let me;
@@ -26,7 +27,11 @@ async function rota() {
   const def = ROTAS.find(([r, , papel]) => r === id && (!papel || papel === me.role)) || ROTAS[0];
   document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('on', a.dataset.r === def[0]));
   loading();
-  try { await VIEWS[def[0]](); } catch (e) { main.replaceChildren(h('p', { class: 'notice bad' }, e.message)); }
+  try {
+    await VIEWS[def[0]]();
+    const dl = location.hash.match(/^#\/casos\/(\d+)(?:\/(\w+))?/);
+    if (dl) { history.replaceState(null, '', '#/casos'); abrirCaso(+dl[1], dl[2] || 'resumo'); }
+  } catch (e) { main.replaceChildren(h('p', { class: 'notice bad' }, e.message)); }
 }
 
 /* --------------------------------------------- contrato e termos (aceite por clique) */
@@ -170,6 +175,7 @@ VIEWS.casos = async () => {
   const k = await api('/api/kanban');
   const clientes = await api('/api/clientes');
   let dragId = null;
+  let soMeus = false;
   const card = (c) => {
     const el = h('div', { class: 'kc', draggable: true, tabindex: 0, role: 'button', onclick: () => abrirCaso(c.id), onkeydown: (e) => { if (e.key === 'Enter') abrirCaso(c.id); } },
       h('b', {}, c.titulo),
@@ -179,13 +185,17 @@ VIEWS.casos = async () => {
         c.segredo ? h('span', { class: 'badge warn' }, 'segredo') : c.sensivel ? h('span', { class: 'badge warn' }, 'sensível') : null,
         c.ia_habilitada ? h('span', { class: 'badge ok' }, 'IA ligada') : null,
         c.rascunhos ? h('span', { class: 'badge gold' }, `${c.rascunhos} p/ revisar`) : null,
-        c.proximo_prazo ? h('span', { class: 'badge blue' }, `prazo ${fmtData(c.proximo_prazo)}`) : null));
+        c.proximo_prazo ? h('span', { class: `badge ${classePrazo(c.proximo_prazo, c.proximo_hora)}` }, `prazo ${fmtData(c.proximo_prazo)} ${c.proximo_hora || ''}`.trim()) : null,
+        c.proximo_prazo_id ? h('button', { class: 'ck', type: 'button', title: 'Marcar este prazo como cumprido', 'aria-label': 'Marcar este prazo como cumprido',
+          onkeydown: (e) => e.stopPropagation(), draggable: false,
+          onclick: guard(async (e) => { e.stopPropagation(); await api(`/api/prazos/${c.proximo_prazo_id}`, { method: 'PATCH', body: { concluido: true } }); toast('Prazo marcado como cumprido.', 'ok'); VIEWS.casos(); }) }, '✓') : null),
+      c.membros?.length ? h('div', { class: 'membros' }, c.membros.map((m) => { const n = k.equipe.find((e) => e.id === m)?.nome || '?'; return h('span', { class: 'av', title: n }, iniciais(n)); })) : null);
     el.addEventListener('dragstart', (e) => { dragId = c.id; el.classList.add('drag'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(c.id)); });
     el.addEventListener('dragend', () => el.classList.remove('drag'));
     return el;
   };
-  const board = h('div', { class: 'board' }, k.fases.map((f) => {
-    const cs = k.casos.filter((c) => c.fase_id === f.id);
+  const desenhaColunas = () => k.fases.map((f) => {
+    const cs = k.casos.filter((c) => c.fase_id === f.id && (!soMeus || c.membros.includes(me.id)));
     const col = h('div', { class: 'col' }, h('h3', {}, f.nome, h('span', { class: 'badge' }, cs.length)), cs.map(card));
     col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('over'); });
     col.addEventListener('dragleave', () => col.classList.remove('over'));
@@ -194,7 +204,8 @@ VIEWS.casos = async () => {
       if (dragId && k.casos.find((c) => c.id === dragId)?.fase_id !== f.id) { await api(`/api/casos/${dragId}`, { method: 'PATCH', body: { fase_id: f.id } }); VIEWS.casos(); }
     }));
     return col;
-  }));
+  });
+  const board = h('div', { class: 'board' }, desenhaColunas());
   const novo = () => {
     const t = h('input', { placeholder: 'Ex.: Reclamação trabalhista: verbas rescisórias' });
     const cnj = h('input', { placeholder: '0000000-00.0000.0.00.0000 (opcional)' });
@@ -212,7 +223,8 @@ VIEWS.casos = async () => {
     const f = h('div', { class: 'card row' }, n, h('button', { class: 'btn gold', onclick: guard(async () => { await api('/api/fases', { method: 'POST', body: { nome: n.value } }); VIEWS.casos(); }) }, 'Adicionar'), h('button', { class: 'btn ghost', onclick: () => f.remove() }, 'Cancelar'));
     main.prepend(f); n.focus();
   };
-  main.replaceChildren(secao('Casos', h('button', { class: 'btn gold', onclick: novo }, '+ Novo caso'), me.role === 'admin' ? h('button', { class: 'btn', onclick: novaColuna }, '+ Coluna') : null),
+  const filtro = h('label', { class: 'row small' }, h('input', { type: 'checkbox', onchange: (e) => { soMeus = e.target.checked; board.replaceChildren(...desenhaColunas()); } }), 'Só meus cartões');
+  main.replaceChildren(secao('Casos', filtro, h('button', { class: 'btn gold', onclick: novo }, '+ Novo caso'), me.role === 'admin' ? h('button', { class: 'btn', onclick: novaColuna }, '+ Coluna') : null),
     ...(k.casos.length ? [] : [h('p', { class: 'notice' }, 'Nenhum caso ainda. Crie um caso ou importe o board do Trello em "Importar do Trello".')]), board);
 };
 
@@ -258,6 +270,12 @@ async function abrirCaso(id, aba = 'resumo') {
       const cl = h('select', {}, opt('', 'Sem cliente'), clientes.map((x) => opt(x.id, x.nome, x.id === c.cliente_id)));
       const fa = h('select', {}, fases.map((f) => opt(f.id, f.nome, f.id === c.fase_id)));
       const resp = me.role === 'admin' ? h('select', {}, opt('', 'Sem responsável'), usuarios.filter((u) => u.role !== 'cliente').map((u) => opt(u.id, u.nome, u.id === c.responsavel_id))) : null;
+      const membrosSel = new Set(d.membros);
+      const membrosBox = h('div', { class: 'stack' }, h('label', {}, 'Membros (recebem os avisos de prazo)'),
+        h('div', { class: 'row membros-lista' }, d.equipe.map((u) => me.role === 'admin'
+          ? h('label', { class: 'row small' }, h('input', { type: 'checkbox', checked: membrosSel.has(u.id), onchange: (e) => { if (e.target.checked) membrosSel.add(u.id); else membrosSel.delete(u.id); } }), u.nome)
+          : (membrosSel.has(u.id) ? h('span', { class: 'badge' }, u.nome) : null))),
+        d.membros.length ? null : h('p', { class: 'small muted' }, 'Sem membros: os avisos vão para o responsável ou, se não houver, para o advogado.'));
       const et = h('input', { value: c.etiquetas || '' }), nt = h('textarea', {}, c.notas || ''), seg = h('input', { type: 'checkbox', checked: !!c.segredo });
       const pc = h('select', {}, opt('', 'Não informada'), opt('autor', 'Autor (propôs a ação)', c.papel_cliente === 'autor'), opt('reu', 'Réu (foi processado)', c.papel_cliente === 'reu'), opt('outro', 'Outra posição', c.papel_cliente === 'outro'));
       const iaPainel = h('div', { class: 'card stack' }, h('h3', {}, 'Inteligência artificial neste caso'),
@@ -272,13 +290,15 @@ async function abrirCaso(id, aba = 'resumo') {
               me.role === 'admin' ? h('div', {}, h('button', { class: 'btn sm gold', onclick: () => habilitarIaDialog(c, () => recarrega('resumo')) }, 'Habilitar IA neste caso')) : h('p', { class: 'small muted' }, 'Só o advogado pode habilitar a IA.')));
       return h('div', { class: 'stack' }, campo('Título', t),
         h('div', { class: 'grid2' }, campo('Número CNJ', cnj), campo('Área', ar), campo('Cliente', cl), campo('Fase', fa), resp ? campo('Responsável', resp) : null, campo('Posição do cliente (a IA usa)', pc), campo('Etiquetas', et)),
-        campo('Notas internas', nt),
+        membrosBox, campo('Notas internas', nt),
         h('label', { class: 'row' }, seg, 'Segredo de justiça (IA bloqueada; texto simples só manual)'), iaPainel,
         h('div', { class: 'row' },
           h('button', { class: 'btn gold', onclick: guard(async () => {
             const b = { titulo: t.value, numero_cnj: cnj.value, area: ar.value, cliente_id: cl.value || null, fase_id: +fa.value, etiquetas: et.value, notas: nt.value, segredo: seg.checked, papel_cliente: pc.value || null };
             if (resp) b.responsavel_id = resp.value || null;
-            await api(`/api/casos/${id}`, { method: 'PATCH', body: b }); toast('Caso salvo.', 'ok'); recarrega('resumo');
+            await api(`/api/casos/${id}`, { method: 'PATCH', body: b });
+            if (me.role === 'admin') await api(`/api/casos/${id}/membros`, { method: 'PUT', body: { ids: [...membrosSel] } });
+            toast('Caso salvo.', 'ok'); recarrega('resumo');
           }) }, 'Salvar'),
           me.datajud ? h('button', { class: 'btn', disabled: !c.numero_cnj || !me.datajud, title: me.datajud ? '' : 'Defina DATAJUD_API_KEY em .env.local para ativar', onclick: guard(async () => { const r = await api(`/api/casos/${id}/datajud`, { method: 'POST' }); toast(`DataJud: ${r.novos} movimentações novas.`, 'ok'); recarrega('andamentos'); }) }, 'Buscar no DataJud') : null,
           me.role === 'admin' ? h('button', { class: 'btn danger right', onclick: () => excluirCasoDialog(c, d, () => fechar()) }, 'Excluir caso') : null));
@@ -318,11 +338,27 @@ async function abrirCaso(id, aba = 'resumo') {
           h('button', { class: 'btn sm danger', onclick: guard(async () => { await api(`/api/documentos/${x.id}`, { method: 'DELETE' }); recarrega('documentos'); }) }, 'Excluir')) : null)) : h('p', { class: 'muted' }, 'Nenhum documento.')));
     },
     prazos: () => {
-      const tt = h('input', { placeholder: 'Ex.: Apresentar réplica' }), dd = h('input', { type: 'date' });
-      return h('div', { class: 'stack' }, h('div', { class: 'card stack' }, h('h3', {}, 'Novo prazo'), h('div', { class: 'grid2' }, campo('Descrição', tt), campo('Data', dd)),
-        h('p', { class: 'small muted' }, 'Confira sempre o prazo na fonte oficial (publicação no DJEN ou sistema do tribunal). Este campo é um lembrete interno.'),
-        h('button', { class: 'btn gold', onclick: guard(async () => { await api(`/api/casos/${id}/prazos`, { method: 'POST', body: { titulo: tt.value, data: dd.value } }); recarrega('prazos'); }) }, 'Adicionar')),
-        h('div', { class: 'list' }, d.prazos.length ? d.prazos.map((p) => h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!p.concluido, onchange: guard(async (e) => { await api(`/api/prazos/${p.id}`, { method: 'PATCH', body: { concluido: e.target.checked } }); }) }), `${fmtData(p.data)} · ${p.titulo}`)) : h('p', { class: 'muted' }, 'Nenhum prazo.')));
+      const tt = h('input', { placeholder: 'Ex.: Apresentar réplica' }), dd = h('input', { type: 'date' }), hh = h('input', { type: 'time', value: '09:00' });
+      const marcaveis = (sel) => ANTECEDENCIAS.map((m) => h('label', { class: 'row small' }, h('input', { type: 'checkbox', value: m, checked: sel.includes(m) }), rotuloAntecedencia(m)));
+      const novoAv = h('div', { class: 'row' }, marcaveis([me.aviso_padrao ?? 1440]));
+      const lidos = (box) => [...box.querySelectorAll('input:checked')].map((i) => +i.value);
+      const item = (p) => {
+        const caixa = h('div', { class: 'row' }, marcaveis(p.avisar));
+        return h('div', { class: 'stack prazo-item' },
+          h('div', { class: 'row' },
+            h('input', { type: 'checkbox', checked: !!p.concluido, 'aria-label': 'Concluído', onchange: guard(async (e) => { await api(`/api/prazos/${p.id}`, { method: 'PATCH', body: { concluido: e.target.checked } }); recarrega('prazos'); }) }),
+            h('span', { class: `badge ${p.concluido ? 'ok' : classePrazo(p.data, p.hora)}` }, `${fmtData(p.data)} ${p.hora || ''}`.trim()),
+            h('span', {}, p.titulo)),
+          h('div', { class: 'row small muted' }, 'Avisar:', caixa,
+            h('button', { class: 'btn sm', onclick: guard(async () => { await api(`/api/prazos/${p.id}`, { method: 'PATCH', body: { avisar: lidos(caixa) } }); toast('Avisos atualizados.', 'ok'); }) }, 'Salvar avisos'),
+            h('button', { class: 'btn sm danger', onclick: guard(async () => { if (await confirmar('Excluir prazo', 'O prazo e os avisos programados serão apagados.', 'Excluir', true)) { await api(`/api/prazos/${p.id}`, { method: 'DELETE' }); recarrega('prazos'); } }) }, 'Excluir')));
+      };
+      return h('div', { class: 'stack' }, h('div', { class: 'card stack' }, h('h3', {}, 'Novo prazo'),
+        h('div', { class: 'grid2' }, campo('Descrição', tt), campo('Data', dd), campo('Hora', hh)),
+        h('div', {}, h('label', {}, 'Avisar a equipe do caso'), novoAv),
+        h('p', { class: 'small muted' }, 'Os avisos vão para os membros do caso (aba Resumo): no sino do painel, por e-mail e por notificação no celular, conforme cada pessoa ativou. Confira sempre o prazo na fonte oficial (DJEN ou sistema do tribunal): este campo é um lembrete interno.'),
+        h('button', { class: 'btn gold', onclick: guard(async () => { await api(`/api/casos/${id}/prazos`, { method: 'POST', body: { titulo: tt.value, data: dd.value, hora: hh.value || '09:00', avisar: lidos(novoAv) } }); recarrega('prazos'); }) }, 'Adicionar')),
+        h('div', { class: 'list' }, d.prazos.length ? d.prazos.map(item) : h('p', { class: 'muted' }, 'Nenhum prazo.')));
     },
     publicacoes: () => h('div', { class: 'list' }, d.publicacoes.length ? d.publicacoes.map((p) => h('div', { class: 'stack' }, h('div', { class: 'row' }, h('b', {}, fmtData(p.data_disp)), h('span', { class: 'badge' }, p.tribunal), h('span', { class: 'badge blue' }, p.tipo)), h('p', { class: 'small muted' }, p.orgao), h('p', { class: 'small' }, `${p.resumo}...`))) : h('p', { class: 'muted' }, 'Nenhuma publicação do DJEN vinculada a este caso.')),
   };
@@ -409,10 +445,14 @@ VIEWS.trello = async () => {
       h('p', { class: 'notice small' }, 'Todos os casos importados começam com a IA desligada. Casos de áreas sensíveis (penal, família e sucessões) são sinalizados. A IA só liga caso a caso, por você, com o consentimento do cliente.'),
       f, h('div', {}, h('button', { class: 'btn gold', onclick: guard(async () => {
         const file = f.files[0]; if (!file) throw new Error('Escolha o arquivo JSON.');
-        const board = JSON.parse(await file.text());
+        let board; try { board = JSON.parse(await file.text()); } catch { throw new Error('O arquivo não é um JSON válido. Exporte de novo pelo Trello (Exportar como JSON).'); }
+        // o JSON do Trello traz o histórico inteiro (actions) e passa de dezenas de MB; só listas e cartões interessam
+        board = { lists: board.lists, members: (board.members || []).map((m) => ({ id: m.id, fullName: m.fullName, username: m.username })), cards: (board.cards || []).map((c) => ({ id: c.id, name: c.name, desc: c.desc, idList: c.idList, closed: c.closed, due: c.due, dueComplete: c.dueComplete, idMembers: c.idMembers || [], labels: (c.labels || []).map((l) => ({ name: l.name })) })) };
         const r = await api('/api/trello/importar', { method: 'POST', body: board });
         modal({ titulo: 'Importação concluída', corpo: h('div', { class: 'stack' },
           h('p', {}, `${r.casos} casos importados em ${r.colunas} colunas, com ${r.prazos} prazos.`),
+          r.ignorados ? h('p', { class: 'notice small' }, `${r.ignorados} cartão(ões) já tinham sido importados antes e foram pulados (nada foi duplicado).`) : null,
+          r.membros_nao_reconhecidos?.length ? h('p', { class: 'notice small' }, `Membros do Trello sem correspondência na equipe do painel (vincule na mão em cada caso, ou cadastre a pessoa em Equipe e acessos com o mesmo nome e importe de novo): ${r.membros_nao_reconhecidos.join(', ')}.`) : null,
           h('p', { class: 'notice' }, 'Todos os casos estão com a IA DESLIGADA.'),
           r.sensiveis ? h('p', { class: 'notice bad' }, `${r.sensiveis} caso(s) são de áreas sensíveis (penal ou família e sucessões). Eles exigem atenção redobrada: a IA só pode ser habilitada por você, caso a caso, com o consentimento escrito do cliente. Em segredo de justiça, a IA fica bloqueada.`) : null,
           h('p', { class: 'small muted' }, 'Depois de conferir os casos, apague o arquivo JSON exportado do Trello do seu computador.')),
@@ -513,6 +553,7 @@ VIEWS.auditoria = async () => {
   me = await api('/api/me');
   document.getElementById('quem').textContent = `${me.nome} · ${me.role}`;
   document.getElementById('senha').addEventListener('click', () => senhaDialog());
+  document.getElementById('avisos').addEventListener('click', () => avisosDialog(me, abrirCaso));
   document.getElementById('sair').addEventListener('click', sair);
   // menu hambúrguer (mobile): abre/fecha, fecha ao navegar e com Esc
   const side = document.getElementById('side'), burger = document.getElementById('burger');
@@ -530,6 +571,8 @@ VIEWS.auditoria = async () => {
   // Uso de IA: decisão obrigatória do advogado, uma vez; sem autorização, a IA fica totalmente desativada
   if (me.role === 'admin' && me.ia_opcao_b === 'pendente') await autorizacaoIaDialog({ forcado: true }).catch(erro);
   montaNav();
+  registraServiceWorker();
+  atualizaSino(); setInterval(atualizaSino, 60e3);
   window.addEventListener('hashchange', () => { menu(false); rota(); });
   rota();
 })();

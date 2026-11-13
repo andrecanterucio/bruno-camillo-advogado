@@ -27,6 +27,8 @@ const { avisoSemNovidade } = await import('./lib/avisos.mjs');
 const { descreve: descreveAuditoria } = await import('./lib/auditoria.mjs');
 const { avisaInteresse } = await import('./lib/email.mjs');
 const { r2Config, r2Apaga } = await import('./lib/r2.mjs');
+const L = await import('./lib/lembretes.mjs');
+const P = await import('./lib/push.mjs');
 // Apaga também a cópia cifrada no R2 (backup). Falha no R2 não impede a exclusão local, mas fica registrada.
 async function apagaNoR2(arquivos) {
   const cfg = r2Config();
@@ -41,12 +43,21 @@ const PORT = +(process.env.PORT || 3000);
 const PROD = process.env.NODE_ENV === 'production';
 if (PROD && process.argv.includes('--demo')) { console.error('Recusado: --demo (dados fictícios e senha conhecida) não pode rodar em produção.'); process.exit(1); }
 const MODO_DEMO = process.argv.includes('--demo');
+// limpeza única: publicações antigas guardaram o CSS do HTML do tribunal ("body{ padding:10px } ...") no começo do texto
+{
+  const { stripHtml } = await import('./lib/util.mjs');
+  for (const [tab, col] of [['publicacoes', 'texto'], ['andamentos', 'texto_original']]) {
+    for (const r of all(`SELECT id, ${col} t FROM ${tab} WHERE ${col} LIKE 'body{%' OR ${col} LIKE 'body {%'`)) {
+      const limpo = stripHtml(r.t); if (limpo !== r.t) run(`UPDATE ${tab} SET ${col}=? WHERE id=?`, limpo, r.id);
+    }
+  }
+}
 const criado = bootstrap({ demo: MODO_DEMO });
 const demoCreds = MODO_DEMO ? criado : null; // só o modo demo mostra credenciais de demonstração
 if (!MODO_DEMO && criado) console.log(`Administrador criado a partir do ambiente: ${criado.email} (troca de senha obrigatória no primeiro login)`);
 
 /* ------------------------------------------------------------ helpers HTTP */
-const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml', '.ico': 'image/x-icon' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml', '.ico': 'image/x-icon' };
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 const BASE_HEADERS = { 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'X-Frame-Options': 'DENY' };
 
@@ -110,7 +121,7 @@ function casoOuErro(u, id) {
   const c = get(`SELECT c.*, f.nome AS fase, cl.nome AS cliente_nome FROM casos c
                  JOIN fases f ON f.id=c.fase_id LEFT JOIN clientes cl ON cl.id=c.cliente_id WHERE c.id=?`, id);
   if (!c) throw new HttpError(404, 'Caso não encontrado.');
-  if (u.role === 'funcionario' && c.responsavel_id !== u.id) throw new HttpError(403, 'Este caso não está atribuído a você.');
+  if (u.role === 'funcionario' && c.responsavel_id !== u.id && !get('SELECT 1 x FROM casos_membros WHERE caso_id=? AND user_id=?', c.id, u.id)) throw new HttpError(403, 'Este caso não está atribuído a você.');
   return c;
 }
 // Empresa (cliente) que a pessoa enxerga: o admin vê todas; a funcionária, as que criou ou onde tem caso sob sua responsabilidade
@@ -118,10 +129,10 @@ function casoOuErro(u, id) {
 // "ter caso sob responsabilidade" não virar escada de privilégio.
 function exigeClienteVisivel(u, clienteId) {
   if (u.role === 'admin') return;
-  const ok = get('SELECT 1 x FROM clientes cl WHERE cl.id=? AND (cl.criado_por=? OR cl.id IN (SELECT cliente_id FROM casos WHERE responsavel_id=?))', clienteId, u.id, u.id);
+  const ok = get('SELECT 1 x FROM clientes cl WHERE cl.id=? AND (cl.criado_por=? OR cl.id IN (SELECT cliente_id FROM casos c WHERE c.responsavel_id=? OR c.id IN (SELECT caso_id FROM casos_membros WHERE user_id=?)))', clienteId, u.id, u.id, u.id);
   if (!ok) throw new HttpError(403, 'Este cliente não está sob sua responsabilidade.');
 }
-const filtroCaso = (u) => (u.role === 'admin' ? ['1=1', []] : ['c.responsavel_id=?', [u.id]]);
+const filtroCaso = (u) => (u.role === 'admin' ? ['1=1', []] : ['(c.responsavel_id=? OR c.id IN (SELECT caso_id FROM casos_membros WHERE user_id=?))', [u.id, u.id]]);
 const bool = (v) => (v ? 1 : 0);
 
 /* ------------------------------------------------------------------- rotas */
@@ -167,7 +178,8 @@ const iaGlobalAceita = () => estadoOpcaoB() === 'aceita';
 R('GET', '/api/me', ({ user }) => {
   if (!user) throw new HttpError(401, 'Sem sessão.');
   const { expira_em, ...u } = user;
-  return { ...u, must_change: !!u.must_change, ia: I.iaAtiva(), datajud: I.datajudAtivo(), demo: !!demoCreds, contrato_aceito: isStaff(user) ? contratoAceito() : null, ia_global_aceita: isStaff(user) ? iaGlobalAceita() : null, ia_opcao_b: isStaff(user) ? estadoOpcaoB() : null };
+  const av = isStaff(user) ? get('SELECT avisos_email, avisos_push, aviso_padrao FROM users WHERE id=?', user.id) : {};
+  return { ...u, avisos_email: !!av.avisos_email, avisos_push: !!av.avisos_push, aviso_padrao: av.aviso_padrao ?? 1440, must_change: !!u.must_change, ia: I.iaAtiva(), datajud: I.datajudAtivo(), demo: !!demoCreds, contrato_aceito: isStaff(user) ? contratoAceito() : null, ia_global_aceita: isStaff(user) ? iaGlobalAceita() : null, ia_opcao_b: isStaff(user) ? estadoOpcaoB() : null };
 });
 R('POST', '/api/auth/aceite', ({ user }) => { if (!user) throw new HttpError(401, 'Faça login.'); run('UPDATE users SET aceite_em=? WHERE id=?', now(), user.id); audit(user.id, 'aceite.termos'); return { ok: true }; });
 R('POST', '/api/auth/senha', ({ req, user, body }) => {
@@ -272,10 +284,10 @@ R('POST', '/api/casos/:id/ia/desabilitar', ({ user, params }) => {
 R('GET', '/api/resumo', ({ user }) => {
   exigeStaff(user);
   const [w, p] = filtroCaso(user);
-  const hoje = new Date().toISOString().slice(0, 10);
-  const em7 = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+  const hoje = L.hojeBRT();
+  const em7 = new Date(Date.now() - 3 * 3600e3 + 7 * 864e5).toISOString().slice(0, 10);
   return {
-    casos_ativos: get(`SELECT COUNT(*) n FROM casos c JOIN fases f ON f.id=c.fase_id WHERE ${w} AND f.nome<>'Encerrado'`, ...p).n,
+    casos_ativos: get(`SELECT COUNT(*) n FROM casos c JOIN fases f ON f.id=c.fase_id WHERE ${w} AND f.nome NOT IN ('Encerrado','Fechamento')`, ...p).n,
     prazos_7d: all(`SELECT pz.*, c.titulo caso FROM prazos pz JOIN casos c ON c.id=pz.caso_id WHERE ${w} AND pz.concluido=0 AND pz.data<=? ORDER BY pz.data LIMIT 12`, ...p, em7).map((x) => ({ ...x, atrasado: x.data < hoje })),
     rascunhos: get(`SELECT COUNT(*) n FROM andamentos a JOIN casos c ON c.id=a.caso_id WHERE ${w} AND a.status='rascunho'`, ...p).n,
     publicacoes_novas: user.role === 'admin' ? get('SELECT COUNT(*) n FROM publicacoes WHERE lida=0').n : null,
@@ -288,9 +300,13 @@ R('GET', '/api/kanban', ({ user }) => {
   return {
     fases: all('SELECT * FROM fases ORDER BY ordem'),
     casos: all(`SELECT c.id, c.titulo, c.area, c.fase_id, c.numero_cnj, c.segredo, c.ia_habilitada, c.etiquetas, cl.nome cliente,
-                  (SELECT MIN(data) FROM prazos WHERE caso_id=c.id AND concluido=0) proximo_prazo,
+                  (SELECT id FROM prazos WHERE caso_id=c.id AND concluido=0 ORDER BY data, hora LIMIT 1) proximo_prazo_id,
+                  (SELECT data FROM prazos WHERE caso_id=c.id AND concluido=0 ORDER BY data, hora LIMIT 1) proximo_prazo,
+                  (SELECT hora FROM prazos WHERE caso_id=c.id AND concluido=0 ORDER BY data, hora LIMIT 1) proximo_hora,
+                  (SELECT GROUP_CONCAT(user_id) FROM casos_membros WHERE caso_id=c.id) membros_ids,
                   (SELECT COUNT(*) FROM andamentos WHERE caso_id=c.id AND status='rascunho') rascunhos
-                FROM casos c LEFT JOIN clientes cl ON cl.id=c.cliente_id WHERE ${w} ORDER BY c.ordem, c.id DESC`, ...p).map((c) => ({ ...c, sensivel: T.ehSensivel(c) })),
+                FROM casos c LEFT JOIN clientes cl ON cl.id=c.cliente_id WHERE ${w} ORDER BY c.ordem, c.id DESC`, ...p).map(({ membros_ids, ...c }) => ({ ...c, membros: membros_ids ? membros_ids.split(',').map(Number) : [], sensivel: T.ehSensivel(c) })),
+    equipe: all("SELECT id, nome FROM users WHERE role IN ('admin','funcionario') AND ativo=1 ORDER BY nome"),
   };
 });
 R('POST', '/api/fases', ({ user, body }) => {
@@ -323,7 +339,9 @@ R('GET', '/api/casos/:id', ({ user, params }) => {
     consentimento_ia: get('SELECT consentimento_em, criado_em, versao FROM ia_caso_consentimento WHERE caso_id=? AND revogado_em IS NULL ORDER BY id DESC LIMIT 1', c.id) ?? null,
     andamentos: all('SELECT * FROM andamentos WHERE caso_id=? ORDER BY data DESC, id DESC', c.id),
     documentos: all('SELECT id, nome, mime, tamanho, visivel_cliente, criado_em FROM documentos WHERE caso_id=? ORDER BY id DESC', c.id),
-    prazos: all('SELECT * FROM prazos WHERE caso_id=? ORDER BY concluido, data', c.id),
+    prazos: all('SELECT * FROM prazos WHERE caso_id=? ORDER BY concluido, data, hora', c.id).map((p) => ({ ...p, avisar: JSON.parse(p.avisar || '[]') })),
+    membros: all('SELECT user_id FROM casos_membros WHERE caso_id=?', c.id).map((m) => m.user_id),
+    equipe: all("SELECT id, nome FROM users WHERE role IN ('admin','funcionario') AND ativo=1 ORDER BY nome"),
     publicacoes: all('SELECT id, tribunal, orgao, tipo, data_disp, substr(texto,1,300) resumo FROM publicacoes WHERE caso_id=? ORDER BY data_disp DESC LIMIT 20', c.id),
   };
 });
@@ -417,19 +435,90 @@ R('DELETE', '/api/andamentos/:id', ({ user, params }) => {
 });
 
 // --- prazos
+const horaOk = (h) => /^([01]\d|2[0-3]):[0-5]\d$/.test(h || '');
+const dataOk = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '') && !Number.isNaN(Date.parse(d));
 R('POST', '/api/casos/:id/prazos', ({ user, params, body }) => {
   exigeStaff(user);
   const c = casoOuErro(user, params.id);
-  if (!body.titulo || !/^\d{4}-\d{2}-\d{2}$/.test(body.data || '')) throw bad('Informe título e data.');
-  return { id: run('INSERT INTO prazos(caso_id,titulo,data,criado_em) VALUES(?,?,?,?)', c.id, String(body.titulo).slice(0, 200), body.data, now()).id };
+  if (!body.titulo || !dataOk(body.data)) throw bad('Informe título e data.');
+  const hora = body.hora ? body.hora : '09:00';
+  if (!horaOk(hora)) throw bad('Hora inválida.');
+  const padrao = get('SELECT aviso_padrao p FROM users WHERE id=?', user.id)?.p ?? 1440;
+  const avisar = L.normalizaAntecedencias(body.avisar ?? [padrao]);
+  const id = run('INSERT INTO prazos(caso_id,titulo,data,hora,avisar,criado_em) VALUES(?,?,?,?,?,?)', c.id, String(body.titulo).slice(0, 200), body.data, hora, JSON.stringify(avisar), now()).id;
+  audit(user.id, 'prazo.criar', String(c.id));
+  return { id };
 });
 R('PATCH', '/api/prazos/:id', ({ user, params, body }) => {
   exigeStaff(user);
   const p = get('SELECT caso_id FROM prazos WHERE id=?', params.id);
   if (!p) throw new HttpError(404, 'Prazo não encontrado.');
   casoOuErro(user, p.caso_id);
-  run('UPDATE prazos SET concluido=? WHERE id=?', bool(body.concluido), params.id);
+  const sets = [], vals = [];
+  if ('concluido' in body) { sets.push('concluido=?'); vals.push(bool(body.concluido)); }
+  if ('titulo' in body) { if (!String(body.titulo).trim()) throw bad('Informe o título.'); sets.push('titulo=?'); vals.push(String(body.titulo).slice(0, 200)); }
+  let remarca = false;
+  if ('data' in body) { if (!dataOk(body.data)) throw bad('Data inválida.'); sets.push('data=?'); vals.push(body.data); remarca = true; }
+  if ('hora' in body) { if (!horaOk(body.hora)) throw bad('Hora inválida.'); sets.push('hora=?'); vals.push(body.hora); remarca = true; }
+  if ('avisar' in body) { sets.push('avisar=?'); vals.push(JSON.stringify(L.normalizaAntecedencias(body.avisar))); remarca = true; }
+  if (remarca) sets.push("avisos_enviados='[]'"); // mudou data, hora ou antecedência: os avisos valem de novo
+  if (!sets.length) throw bad('Nada para atualizar.');
+  run(`UPDATE prazos SET ${sets.join(',')} WHERE id=?`, ...vals, params.id);
   return { ok: true };
+});
+R('DELETE', '/api/prazos/:id', ({ user, params }) => {
+  exigeStaff(user);
+  const p = get('SELECT caso_id FROM prazos WHERE id=?', params.id);
+  if (!p) throw new HttpError(404, 'Prazo não encontrado.');
+  casoOuErro(user, p.caso_id);
+  run('DELETE FROM prazos WHERE id=?', params.id);
+  audit(user.id, 'prazo.excluir', String(p.caso_id));
+  return { ok: true };
+});
+
+// --- membros do caso (só o advogado vincula: vincular dá acesso ao caso)
+R('PUT', '/api/casos/:id/membros', ({ user, params, body }) => {
+  exigeAdmin(user);
+  casoOuErro(user, params.id);
+  const ids = [...new Set((Array.isArray(body.ids) ? body.ids : []).map(Number))];
+  const validos = ids.filter((i) => get("SELECT 1 x FROM users WHERE id=? AND ativo=1 AND role IN ('admin','funcionario')", i));
+  if (validos.length !== ids.length) throw bad('Só pessoas ativas da equipe podem ser membros.');
+  tx(() => { run('DELETE FROM casos_membros WHERE caso_id=?', params.id); for (const i of validos) run('INSERT INTO casos_membros(caso_id,user_id) VALUES(?,?)', params.id, i); });
+  audit(user.id, 'caso.membros', params.id);
+  return { ok: true };
+});
+
+// --- avisos: sino, preferências e push
+R('GET', '/api/notificacoes', ({ user }) => {
+  exigeStaff(user);
+  return { itens: all('SELECT id, caso_id, titulo, corpo, lida, criado_em FROM notificacoes WHERE user_id=? ORDER BY id DESC LIMIT 30', user.id),
+           nao_lidas: get('SELECT COUNT(*) n FROM notificacoes WHERE user_id=? AND lida=0', user.id).n };
+});
+R('POST', '/api/notificacoes/lidas', ({ user }) => { exigeStaff(user); run('UPDATE notificacoes SET lida=1 WHERE user_id=? AND lida=0', user.id); return { ok: true }; });
+R('PATCH', '/api/eu/avisos', ({ user, body }) => {
+  exigeStaff(user);
+  if ('email' in body) run('UPDATE users SET avisos_email=? WHERE id=?', bool(body.email), user.id);
+  if ('push' in body) run('UPDATE users SET avisos_push=? WHERE id=?', bool(body.push), user.id);
+  if ('padrao' in body) { if (!L.ANTECEDENCIAS.includes(+body.padrao)) throw bad('Antecedência inválida.'); run('UPDATE users SET aviso_padrao=? WHERE id=?', +body.padrao, user.id); }
+  return { ok: true };
+});
+R('GET', '/api/push/chave', ({ user }) => { exigeStaff(user); return { chave: P.chavePublica() }; });
+R('POST', '/api/push/inscrever', ({ user, body }) => {
+  exigeStaff(user);
+  const ep = String(body.endpoint || ''), k = body.keys || {};
+  if (!P.endpointValido(ep) || !k.p256dh || !k.auth || String(k.p256dh).length > 200 || String(k.auth).length > 100) throw bad('Inscrição de notificação inválida.');
+  run('INSERT INTO push_subs(user_id,endpoint,p256dh,auth,criado_em) VALUES(?,?,?,?,?) ON CONFLICT(endpoint) DO UPDATE SET user_id=excluded.user_id, p256dh=excluded.p256dh, auth=excluded.auth', user.id, ep, k.p256dh, k.auth, now());
+  return { ok: true };
+});
+R('POST', '/api/push/cancelar', ({ user, body }) => { exigeStaff(user); run('DELETE FROM push_subs WHERE endpoint=? AND user_id=?', String(body.endpoint || ''), user.id); return { ok: true }; });
+R('POST', '/api/push/teste', async ({ user }) => {
+  exigeStaff(user);
+  const subs = all('SELECT * FROM push_subs WHERE user_id=?', user.id);
+  if (!subs.length) throw bad('Este aparelho ainda não está inscrito. Ative as notificações primeiro.');
+  let ok = 0;
+  for (const sub of subs) { try { if (await P.enviaPush(sub, { titulo: 'Teste de notificação', corpo: 'Se você está lendo isto, os avisos de prazo vão chegar aqui.', url: '/painel', tag: 'teste' })) ok++; } catch (e) { console.warn('Push de teste falhou:', e.message); } }
+  if (!ok) throw bad('O serviço de notificação não aceitou o envio. Tente ativar de novo.');
+  return { enviados: ok };
 });
 
 // --- documentos (arquivos ficam fora da pasta pública, com download autenticado)
@@ -523,7 +612,7 @@ R('GET', '/api/clientes', ({ user }) => {
   const base = `SELECT cl.*, (SELECT COUNT(*) FROM casos WHERE cliente_id=cl.id) casos,
                 (SELECT id FROM users WHERE cliente_id=cl.id LIMIT 1) user_id FROM clientes cl`;
   if (user.role === 'admin') return all(`${base} ORDER BY cl.status='lead' DESC, cl.nome`);
-  return all(`${base} WHERE cl.criado_por=? OR cl.id IN (SELECT cliente_id FROM casos WHERE responsavel_id=?) ORDER BY cl.nome`, user.id, user.id);
+  return all(`${base} WHERE cl.criado_por=? OR cl.id IN (SELECT cliente_id FROM casos c WHERE c.responsavel_id=? OR c.id IN (SELECT caso_id FROM casos_membros WHERE user_id=?)) ORDER BY cl.nome`, user.id, user.id, user.id);
 });
 R('POST', '/api/clientes', ({ user, body }) => {
   exigeStaff(user);
@@ -791,6 +880,7 @@ function limpezaPeriodica() {
 }
 limpezaPeriodica();
 setInterval(limpezaPeriodica, 6 * 3600e3).unref();
+L.iniciaLembretes();
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
@@ -803,6 +893,8 @@ const server = http.createServer(async (req, res) => {
       if (f.startsWith(ASSET_UI + path.sep) && servirArquivo(res, f, { csp: true })) return;
       return send(res, 404, 'Não encontrado');
     }
+    if (pathname === '/painel-sw.js') return servirArquivo(res, path.join(ASSET_UI, 'sw.js'), { csp: true }) ? undefined : send(res, 404, 'Não encontrado');
+    if (pathname === '/painel.webmanifest') return servirArquivo(res, path.join(ASSET_UI, 'painel.webmanifest'), { cache: 'no-cache' }) ? undefined : send(res, 404, 'Não encontrado');
     // páginas
     if (PAGINAS[pathname]) {
       const u = userFromReq(req);
@@ -827,7 +919,7 @@ const server = http.createServer(async (req, res) => {
       // equipe: o contrato precisa estar aceito (pelo advogado) antes de usar o painel
       if (isStaff(user) && !LIVRES_CONTRATO.has(pathname) && !contratoAceito()) throw new HttpError(403, 'contrato');
       const params = rota.re.exec(pathname).groups || {};
-      const body = req.method === 'POST' || req.method === 'PATCH' ? (/json/.test(req.headers['content-type'] || '') && !/importar$/.test(pathname) ? await readJson(req) : {}) : {};
+      const body = ['POST', 'PATCH', 'PUT'].includes(req.method) ? (/json/.test(req.headers['content-type'] || '') && !/importar$/.test(pathname) ? await readJson(req) : {}) : {};
       const out = await rota.fn({ req, res, user, params, body });
       if (out === undefined) return;
       return sendJson(res, out);
