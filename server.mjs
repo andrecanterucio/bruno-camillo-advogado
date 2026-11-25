@@ -864,6 +864,53 @@ R('GET', '/api/portal/casos/:id', ({ user, params }) => {
   };
 });
 
+
+/* ------------------------------------------------- ponte com o atendimento ZACDA
+   Recebe o dossiê REVISADO por um advogado no atendimento e cria (ou atualiza) cliente-lead + caso na 1ª coluna.
+   Servidor-a-servidor: autenticada por token (INTEGRACAO_TOKEN), sem cookie e sem o cabeçalho anti-CSRF.
+   Desligada (404) sem o token. Só recebe depois do contrato do painel aceito. Não liga IA, não abre o portal. */
+const TOKEN_INTEGRACAO = process.env.INTEGRACAO_TOKEN || '';
+const AREAS_LIVRES = 80;
+async function integracaoLead(req, res) {
+  if (TOKEN_INTEGRACAO.length < 32) throw new HttpError(404, 'Rota não encontrada.');
+  if (!dentroDoLimite('integracao', ipDoCliente(req), 60, 60e3)) throw new HttpError(429, 'Muitas requisições.');
+  const auth = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const a = crypto.createHash('sha256').update(auth).digest(), b = crypto.createHash('sha256').update(TOKEN_INTEGRACAO).digest();
+  if (!crypto.timingSafeEqual(a, b)) throw new HttpError(401, 'Não autorizado.');
+  if (!contratoAceito()) throw new HttpError(409, 'O advogado ainda não aceitou o contrato do painel. Nenhum dado foi recebido.');
+  const body = await readJson(req, 400e3);
+  const ref = String(body.ref || '').trim().slice(0, 120);
+  const nome = String(body.nome || '').replace(/\s+/g, ' ').trim().slice(0, 150) || 'Contato sem nome';
+  const dossie = String(body.dossie_md || '').trim();
+  if (!ref) throw bad('ref obrigatório.');
+  if (!dossie || dossie.length > 250e3) throw bad('dossie_md vazio ou grande demais.');
+  const tel = digits(body.telefone).slice(0, 20) || null;
+  const email = String(body.email || '').trim().slice(0, 150) || null;
+  const area = String(body.area || '').trim().slice(0, AREAS_LIVRES) || null;
+  const urgente = !!body.urgente;
+  const revisor = String(body.revisado_por || '').trim().slice(0, 120);
+  const cabecalho = `Recebido do atendimento ZACDA em ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}${revisor ? ` · dossiê revisado por ${revisor}` : ''}.\nTexto gerado por IA e revisado pelo advogado no atendimento; confira antes de usar.`;
+  const out = tx(() => {
+    const existente = get('SELECT id, notas FROM casos WHERE origem_ref=?', ref);
+    if (existente) {
+      // Reenvio: nunca sobrescreve o que a equipe editou; acrescenta a nova versão ao fim das notas.
+      run('UPDATE casos SET notas=?, atualizado_em=? WHERE id=?', `${existente.notas || ''}\n\n---\n${cabecalho}\n\n${dossie}`.trim(), now(), existente.id);
+      audit(null, 'integracao.lead_reenvio', String(existente.id));
+      return { caso_id: existente.id, criado: false };
+    }
+    // Mesmo telefone já veio do atendimento: reaproveita o cliente em vez de duplicar.
+    let cl = tel ? get("SELECT id FROM clientes WHERE origem='Atendimento ZACDA' AND telefone=? LIMIT 1", tel) : null;
+    if (!cl) cl = { id: run("INSERT INTO clientes(nome,telefone,email,origem,status,notas,criado_por,criado_em) VALUES(?,?,?,?,?,?,?,?)", nome, tel, email, 'Atendimento ZACDA', 'lead', null, null, now()).id };
+    const fase = get('SELECT id FROM fases ORDER BY ordem LIMIT 1').id;
+    const titulo = `${nome}${area ? ` — ${area}` : ''}`.slice(0, 200);
+    const id = run('INSERT INTO casos(titulo,cliente_id,area,fase_id,etiquetas,notas,origem_ref,criado_em,atualizado_em) VALUES(?,?,?,?,?,?,?,?,?)',
+      titulo, cl.id, area, fase, urgente ? 'Atendimento ZACDA,URGENTE' : 'Atendimento ZACDA', `${cabecalho}\n\n${dossie}`, ref, now(), now()).id;
+    audit(null, 'integracao.lead', String(id));
+    return { caso_id: id, criado: true };
+  });
+  return sendJson(res, out, out.criado ? 201 : 200);
+}
+
 /* ----------------------------------------------------------------- servidor */
 const PAGINAS = { '/login': 'login.html', '/painel': 'equipe.html', '/portal': 'portal.html' };
 const LIVRES_TROCA = new Set(['/api/me', '/api/auth/senha', '/api/auth/logout']);
@@ -906,6 +953,7 @@ const server = http.createServer(async (req, res) => {
     }
     // API
     if (pathname.startsWith('/api/')) {
+      if (pathname === '/api/integracao/leads' && req.method === 'POST') return await integracaoLead(req, res);
       const rota = routes.find((r) => r.method === req.method && r.re.test(pathname));
       if (!rota) throw new HttpError(404, 'Rota não encontrada.');
       if (req.method !== 'GET') {
